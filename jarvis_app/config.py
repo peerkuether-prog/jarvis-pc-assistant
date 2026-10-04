@@ -1,19 +1,20 @@
-from pathlib import Path
 import os
+from pathlib import Path
 
 from dotenv import load_dotenv
 
-PROJECT_NAME = "Jarvis Assistant"
+BASE_DIR = Path(__file__).resolve().parent.parent
+load_dotenv(BASE_DIR / ".env")
+
 APP_TITLE = "Jarvis PC Assistant"
+PROJECT_NAME = "Jarvis"
 DEFAULT_MODEL = "gpt-4o-mini"
-
-
-load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+OPENAI_BASE_URL = "https://api.openai.com/v1"
 
 
 def get_api_key() -> str:
     return os.getenv("OPENAI_API_KEY", "")
 
 
-def get_default_dir() -> str:
-    return os.path.expanduser("~")
+def get_home_dir() -> str:
+    return str(Path.home())

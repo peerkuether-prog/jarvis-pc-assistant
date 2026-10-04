@@ -6,30 +6,30 @@ from pathlib import Path
 
 
 def safe_execute(command: str) -> str:
-    """Execute a safe, non-destructive command in a controlled way."""
-    command = command.strip()
-    if not command:
+    if not command or not command.strip():
         return "No command provided."
 
-    blocked = ["del ", "rm -rf", "format", "shutdown", "restart", "reboot", "taskkill"]
-    lowered = command.lower()
-    for keyword in blocked:
-        if keyword in lowered:
-            return "This action is blocked for safety. I can open apps, files, or folders, but I won't run destructive commands."
+    lowered = command.lower().strip()
+    blocked = [
+        "del ", "rm -rf", "format", "shutdown", "restart", "reboot",
+        "taskkill", "rmdir /s", "powershell -command remove-item",
+    ]
+    for token in blocked:
+        if token in lowered:
+            return "This action is blocked for your safety. I can launch apps, open files, and do safe local actions only."
 
     try:
         subprocess.Popen(command, shell=True)
         return f"Command started: {command}"
-    except Exception as exc:  # pragma: no cover - depends on OS
+    except Exception as exc:
         return f"Could not start command: {exc}"
 
 
 def open_app(app_name: str) -> str:
-    """Open a common Windows application or file."""
     if not app_name:
-        return "I need the name of the app or file to open."
+        return "Please tell me which app or file to open."
 
-    normalized = app_name.strip().lower()
+    target = app_name.strip()
     app_map = {
         "notepad": "notepad.exe",
         "calculator": "calc.exe",
@@ -40,26 +40,26 @@ def open_app(app_name: str) -> str:
         "chrome": "msedge.exe",
         "edge": "msedge.exe",
         "browser": "msedge.exe",
+        "file explorer": "explorer.exe",
     }
-
-    target = app_map.get(normalized, app_name)
+    normalized = target.lower()
+    launch_target = app_map.get(normalized, target)
 
     if platform.system().lower() == "windows":
         try:
-            os.startfile(target)
-            return f"Opened: {target}"
+            os.startfile(launch_target)
+            return f"Opened: {launch_target}"
         except Exception:
             pass
 
     try:
-        subprocess.Popen(target)
-        return f"Opened: {target}"
+        subprocess.Popen(launch_target)
+        return f"Opened: {launch_target}"
     except Exception as exc:
         return f"I could not open '{app_name}': {exc}"
 
 
 def open_url(url: str) -> str:
-    """Open a website in the default browser."""
     cleaned = url.strip()
     if not cleaned:
         return "No URL provided."
@@ -70,19 +70,19 @@ def open_url(url: str) -> str:
 
 
 def list_dir(path: str) -> str:
-    """List files in a directory."""
     search_path = path.strip() or str(Path.home())
-    if not Path(search_path).exists():
+    target = Path(search_path).expanduser()
+    if not target.exists():
         return f"Path does not exist: {search_path}"
+    if not target.is_dir():
+        return f"This is not a folder: {search_path}"
 
-    entries = []
-    for child in sorted(Path(search_path).iterdir()):
-        entries.append(child.name)
-    return "\n".join(entries[:25]) if entries else "Folder is empty."
+    entries = sorted(child.name for child in target.iterdir())
+    preview = "\n".join(entries[:30]) if entries else "Folder is empty."
+    return preview
 
 
 def read_file(path: str) -> str:
-    """Read a text file and return its contents (up to a limit)."""
     target = Path(path).expanduser()
     if not target.exists():
         return f"File not found: {path}"
@@ -92,14 +92,12 @@ def read_file(path: str) -> str:
     try:
         text = target.read_text(encoding="utf-8", errors="ignore")
     except Exception:
-        return "I could not read that file. It may not be a valid text file."
+        return "I could not read this file. It may not be a valid text file."
 
-    preview = text[:2000]
-    return preview if preview else "The file is empty."
+    return text[:3000] if text else "The file is empty."
 
 
 def get_system_summary() -> str:
-    """Return a brief summary of the current machine."""
     system = platform.system()
     release = platform.release()
     version = platform.version()
