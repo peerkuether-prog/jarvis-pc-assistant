@@ -13,16 +13,28 @@ def safe_execute(command: str) -> str:
     blocked = [
         "del ", "rm -rf", "format", "shutdown", "restart", "reboot",
         "taskkill", "rmdir /s", "powershell -command remove-item",
+        "dd if=", "mkfs",
     ]
     for token in blocked:
         if token in lowered:
-            return "This action is blocked for your safety. I can launch apps, open files, and do safe local actions only."
+            return "This action is blocked for safety. I handle safe tasks and app control only."
 
     try:
-        subprocess.Popen(command, shell=True)
-        return f"Command started: {command}"
+        result = subprocess.run(
+            command,
+            shell=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode == 0:
+            return f"Command executed successfully.\n{result.stdout[:500]}" if result.stdout else "Command completed."
+        else:
+            return f"Command failed with error:\n{result.stderr[:500]}"
+    except subprocess.TimeoutExpired:
+        return "Command took too long to execute and was cancelled."
     except Exception as exc:
-        return f"Could not start command: {exc}"
+        return f"Could not execute command: {exc}"
 
 
 def open_app(app_name: str) -> str:
@@ -41,6 +53,10 @@ def open_app(app_name: str) -> str:
         "edge": "msedge.exe",
         "browser": "msedge.exe",
         "file explorer": "explorer.exe",
+        "vscode": "code.exe",
+        "visual studio code": "code.exe",
+        "python": "python.exe",
+        "git": "git.exe",
     }
     normalized = target.lower()
     launch_target = app_map.get(normalized, target)
@@ -77,9 +93,14 @@ def list_dir(path: str) -> str:
     if not target.is_dir():
         return f"This is not a folder: {search_path}"
 
-    entries = sorted(child.name for child in target.iterdir())
-    preview = "\n".join(entries[:30]) if entries else "Folder is empty."
-    return preview
+    try:
+        entries = sorted(child.name for child in target.iterdir())
+        preview = "\n".join(entries[:50]) if entries else "Folder is empty."
+        return f"Contents of {search_path}:\n{preview}"
+    except PermissionError:
+        return f"Permission denied accessing {search_path}"
+    except Exception as exc:
+        return f"Error listing folder: {exc}"
 
 
 def read_file(path: str) -> str:
@@ -94,7 +115,30 @@ def read_file(path: str) -> str:
     except Exception:
         return "I could not read this file. It may not be a valid text file."
 
-    return text[:3000] if text else "The file is empty."
+    preview = text[:5000] if text else "The file is empty."
+    line_count = text.count("\n") + 1 if text else 0
+    return f"File: {path} ({line_count} lines)\n---\n{preview}"
+
+
+def write_file(path: str, content: str) -> str:
+    try:
+        target = Path(path).expanduser()
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8")
+        return f"File written successfully: {path}"
+    except Exception as exc:
+        return f"Could not write file: {exc}"
+
+
+def delete_file(path: str) -> str:
+    try:
+        target = Path(path).expanduser()
+        if not target.exists():
+            return f"File does not exist: {path}"
+        target.unlink()
+        return f"File deleted: {path}"
+    except Exception as exc:
+        return f"Could not delete file: {exc}"
 
 
 def get_system_summary() -> str:
@@ -103,10 +147,12 @@ def get_system_summary() -> str:
     version = platform.version()
     machine = platform.machine()
     user = os.getenv("USERNAME") or os.getenv("USER") or "User"
+    processor = platform.processor() or "Unknown"
     return (
         f"System: {system} {release}\n"
         f"Version: {version}\n"
         f"Architecture: {machine}\n"
+        f"Processor: {processor}\n"
         f"User: {user}"
     )
 
@@ -116,4 +162,25 @@ def search_web(query: str) -> str:
         return "No search query provided."
     url = "https://www.google.com/search?q=" + webbrowser.quote(query)
     webbrowser.open(url)
-    return f"Searching the web for: {query}"
+    return f"Searching Google for: {query}"
+
+
+def get_file_info(path: str) -> str:
+    try:
+        target = Path(path).expanduser()
+        if not target.exists():
+            return f"Path does not exist: {path}"
+        
+        stat = target.stat()
+        size_kb = stat.st_size / 1024
+        is_dir = target.is_dir()
+        type_str = "Folder" if is_dir else "File"
+        
+        return (
+            f"{type_str}: {path}\n"
+            f"Size: {size_kb:.2f} KB\n"
+            f"Modified: {target.stat().st_mtime}\n"
+            f"Is Directory: {is_dir}"
+        )
+    except Exception as exc:
+        return f"Could not get file info: {exc}"

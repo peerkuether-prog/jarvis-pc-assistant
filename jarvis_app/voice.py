@@ -15,16 +15,16 @@ class VoiceController:
     def _setup_engine(self):
         try:
             self.engine = pyttsx3.init()
-            self.engine.setProperty("rate", 165)
+            self.engine.setProperty("rate", 170)
             self.engine.setProperty("volume", 1.0)
         except Exception:
             self.engine = None
 
-    def listen_once(self) -> str:
+    def listen_once(self, timeout: int = 8) -> str:
         try:
             with self.microphone as source:
                 self.recognizer.adjust_for_ambient_noise(source, duration=0.5)
-                audio = self.recognizer.listen(source, timeout=8, phrase_time_limit=8)
+                audio = self.recognizer.listen(source, timeout=timeout, phrase_time_limit=timeout)
             return self.recognizer.recognize_google(audio).strip()
         except (sr.WaitTimeoutError, sr.UnknownValueError, sr.RequestError):
             return ""
@@ -48,6 +48,10 @@ def get_current_time() -> str:
 
 def get_current_date() -> str:
     return datetime.now().strftime("%A, %B %d, %Y")
+
+
+def get_current_datetime() -> str:
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
 def get_system_uptime() -> str:
