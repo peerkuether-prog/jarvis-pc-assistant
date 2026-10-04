@@ -8,9 +8,10 @@ load_dotenv(BASE_DIR / ".env")
 
 APP_TITLE = "Jarvis Premium"
 PROJECT_NAME = "Jarvis"
-APP_VERSION = "2.0"
+APP_VERSION = "3.0"
 DEFAULT_MODEL = "gpt-4o-mini"
 CODING_MODEL = "gpt-4o"
+ADVANCED_MODEL = "gpt-4-turbo"
 OPENAI_BASE_URL = "https://api.openai.com/v1"
 
 THEME_BG_PRIMARY = "#0f1419"
@@ -22,6 +23,13 @@ THEME_SUCCESS = "#10b981"
 THEME_WARNING = "#f59e0b"
 THEME_ERROR = "#ef4444"
 
+# Advanced AI settings
+AI_TEMPERATURE_CHAT = 0.5
+AI_TEMPERATURE_CODING = 0.2
+AI_TEMPERATURE_CREATIVE = 0.8
+AI_MAX_TOKENS = 2048
+AI_TIMEOUT = 60
+
 def get_api_key() -> str:
     return os.getenv("OPENAI_API_KEY", "")
 
@@ -32,3 +40,8 @@ def get_config_dir() -> Path:
     config_dir = Path.home() / ".jarvis"
     config_dir.mkdir(exist_ok=True)
     return config_dir
+
+def get_log_file() -> Path:
+    log_dir = get_config_dir() / "logs"
+    log_dir.mkdir(exist_ok=True)
+    return log_dir / "jarvis.log"
