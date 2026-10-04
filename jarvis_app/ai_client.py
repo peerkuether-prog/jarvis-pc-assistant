@@ -1,228 +1,212 @@
+#!/usr/bin/env python3
+"""Enhanced AI client with better reasoning, memory, and specialized models."""
+
 import json
 import logging
-from typing import Optional, List, Dict
+from typing import List, Optional, Dict, Any
 
 import requests
 
 from jarvis_app.config import (
-    ADVANCED_MODEL, CODING_MODEL, DEFAULT_MODEL, OPENAI_BASE_URL, 
-    AI_TEMPERATURE_CHAT, AI_TEMPERATURE_CODING, AI_TEMPERATURE_CREATIVE,
-    AI_MAX_TOKENS, AI_TIMEOUT, get_log_file
+    OPENAI_BASE_URL,
+    DEFAULT_MODEL,
+    CODING_MODEL,
+    ADVANCED_MODEL,
+    AI_TEMPERATURE_CHAT,
+    AI_TEMPERATURE_CODING,
+    AI_TEMPERATURE_CREATIVE,
+    AI_MAX_TOKENS,
+    AI_TIMEOUT,
+    get_api_key,
 )
 
-# Setup logging
-logging.basicConfig(
-    filename=str(get_log_file()),
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
 logger = logging.getLogger(__name__)
 
 
 class AdvancedAIClient:
-    """Advanced AI client with conversation memory, reasoning, and specialization."""
+    """AI client with context memory, specialized prompts, and multi-model support."""
 
     def __init__(self, api_key: Optional[str] = None):
-        from jarvis_app.config import get_api_key
         self.api_key = api_key or get_api_key()
         self.base_url = OPENAI_BASE_URL
-        self.conversation_history: List[Dict] = []
-        self.max_history = 20
+        self.conversation_history: List[Dict[str, str]] = []
+        self.context_window = 10  # Keep last 10 exchanges
 
-    def _add_to_history(self, role: str, content: str):
-        """Add message to conversation history."""
-        self.conversation_history.append({"role": role, "content": content})
-        # Keep only recent messages
-        if len(self.conversation_history) > self.max_history:
-            self.conversation_history = self.conversation_history[-self.max_history:]
-
-    def _get_history_context(self) -> str:
-        """Get context from conversation history."""
-        if not self.conversation_history:
-            return ""
-        recent = self.conversation_history[-4:]
-        context = "Recent context: " + " | ".join(
-            f"{msg['role']}: {msg['content'][:100]}" for msg in recent
-        )
-        return context
-
-    def ask(
-        self,
-        prompt: str,
-        system_prompt: str = None,
-        model: str = DEFAULT_MODEL,
-        temperature: float = AI_TEMPERATURE_CHAT,
-        use_history: bool = True,
-    ) -> str:
-        """Ask AI with advanced features."""
+    def _chat(self, messages: List[Dict[str, str]], model: str = DEFAULT_MODEL, temp: float = AI_TEMPERATURE_CHAT) -> str:
+        """Internal chat call with retry logic."""
         if not self.api_key:
-            logger.warning("No API key configured")
             return ""
-
-        default_system = "You are Jarvis, an advanced desktop AI assistant. Be helpful, precise, and friendly."
-        system_content = system_prompt or default_system
-        
-        # Build messages with history
-        messages = [{"role": "system", "content": system_content}]
-        
-        if use_history and self.conversation_history:
-            # Add recent context
-            context = self._get_history_context()
-            if context:
-                messages.append({"role": "system", "content": context})
-            messages.extend(self.conversation_history)
-        
-        messages.append({"role": "user", "content": prompt})
-
-        payload = {
-            "model": model,
-            "messages": messages,
-            "temperature": temperature,
-            "max_tokens": AI_MAX_TOKENS,
-        }
 
         try:
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+            }
+            payload = {
+                "model": model,
+                "messages": messages,
+                "temperature": temp,
+                "max_tokens": AI_MAX_TOKENS,
+            }
             response = requests.post(
                 f"{self.base_url}/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {self.api_key}",
-                    "Content-Type": "application/json",
-                },
+                headers=headers,
                 json=payload,
                 timeout=AI_TIMEOUT,
             )
             response.raise_for_status()
             data = response.json()
-            result = data["choices"][0]["message"]["content"].strip()
-            
-            # Store in history
-            if use_history:
-                self._add_to_history("user", prompt)
-                self._add_to_history("assistant", result)
-            
-            logger.info(f"API call successful - model: {model}")
-            return result
+            return data["choices"][0]["message"]["content"].strip()
         except requests.exceptions.Timeout:
-            logger.error("API request timeout")
-            return "Request timed out. Please try again."
+            return "AI request timed out. Try a simpler question."
         except requests.exceptions.RequestException as e:
-            logger.error(f"API request failed: {e}")
+            logger.error(f"AI request failed: {e}")
             return ""
         except Exception as e:
-            logger.error(f"Unexpected error: {e}")
+            logger.error(f"AI error: {e}")
             return ""
 
-    def code_review(self, code: str, language: str = "python") -> str:
-        """Expert code review with detailed feedback."""
-        system = (
-            f"You are an expert {language} code reviewer. Provide detailed, actionable feedback on:\n"
-            "1. Code quality and style\n"
-            "2. Performance issues\n"
-            "3. Security vulnerabilities\n"
-            "4. Best practices\n"
-            "5. Refactoring suggestions\n"
-            "Be specific and provide code examples where helpful."
-        )
-        prompt = f"Review this {language} code and provide expert feedback:\n\n{code[:5000]}"
-        return self.ask(prompt, system_prompt=system, model=CODING_MODEL, temperature=AI_TEMPERATURE_CODING)
+    def _build_messages(self, user_message: str, system_prompt: str) -> List[Dict[str, str]]:
+        """Build message list with context memory."""
+        messages = [{"role": "system", "content": system_prompt}]
+        messages.extend(self.conversation_history[-self.context_window * 2 :])
+        messages.append({"role": "user", "content": user_message})
+        return messages
 
-    def generate_code(self, description: str, language: str = "python") -> str:
-        """Generate production-ready code."""
-        system = (
-            f"You are an expert {language} developer. Generate clean, production-ready code that:\n"
-            "1. Follows best practices\n"
-            "2. Includes error handling\n"
-            "3. Has clear documentation\n"
-            "4. Is well-structured and maintainable\n"
-            "Always include comments and docstrings."
-        )
-        prompt = f"Generate {language} code for:\n{description}"
-        return self.ask(prompt, system_prompt=system, model=CODING_MODEL, temperature=AI_TEMPERATURE_CODING)
+    def ask(
+        self,
+        prompt: str,
+        system_prompt: str = "You are Jarvis, a helpful desktop AI assistant. Keep responses clear, concise, and practical.",
+    ) -> str:
+        """Ask AI with context awareness."""
+        messages = self._build_messages(prompt, system_prompt)
+        response = self._chat(messages, model=DEFAULT_MODEL, temp=AI_TEMPERATURE_CHAT)
 
-    def debug_error(self, error: str, context: str = "") -> str:
-        """Advanced debugging assistance."""
-        system = (
-            "You are a debugging expert. Analyze errors deeply and provide:\n"
-            "1. Root cause analysis\n"
-            "2. Step-by-step solutions\n"
-            "3. Prevention strategies\n"
-            "4. Relevant code examples"
+        if response:
+            self.conversation_history.append({"role": "user", "content": prompt})
+            self.conversation_history.append({"role": "assistant", "content": response})
+
+        return response
+
+    def code_review(self, code: str) -> str:
+        """Review and critique code."""
+        prompt = f"""Review this code for:
+1. Correctness and potential bugs
+2. Performance issues
+3. Best practices and style
+4. Security concerns
+5. Suggestions for improvement
+
+Code:
+```
+{code}
+```
+
+Provide actionable feedback."""
+        return self._chat(
+            self._build_messages(
+                prompt,
+                "You are an expert code reviewer. Provide specific, actionable feedback.",
+            ),
+            model=CODING_MODEL,
+            temp=AI_TEMPERATURE_CODING,
         )
-        prompt = f"Error: {error}\n\nContext: {context}\n\nProvide detailed debugging help."
-        return self.ask(prompt, system_prompt=system, model=ADVANCED_MODEL, temperature=AI_TEMPERATURE_CODING)
+
+    def generate_code(self, prompt: str, language: str = "python") -> str:
+        """Generate code based on requirements."""
+        full_prompt = f"""Generate clean, production-ready {language} code for:
+{prompt}
+
+Include:
+- Clear comments
+- Error handling
+- Type hints (if applicable)
+- Best practices"""
+        return self._chat(
+            self._build_messages(
+                full_prompt,
+                f"You are an expert {language} developer. Generate clean, well-documented code.",
+            ),
+            model=CODING_MODEL,
+            temp=AI_TEMPERATURE_CODING,
+        )
 
     def explain_code(self, code: str) -> str:
-        """Deep code explanation."""
-        system = (
-            "You are a code explanation expert. Explain code clearly by:\n"
-            "1. Breaking down the logic\n"
-            "2. Explaining key concepts\n"
-            "3. Highlighting important patterns\n"
-            "4. Providing real-world context"
-        )
-        prompt = f"Explain this code in detail:\n\n{code[:5000]}"
-        return self.ask(prompt, system_prompt=system, temperature=AI_TEMPERATURE_CHAT)
+        """Explain what code does."""
+        prompt = f"""Explain this code clearly:
 
-    def refactor_code(self, code: str, language: str = "python") -> str:
-        """Professional code refactoring."""
-        system = (
-            f"You are a {language} refactoring expert. Improve code by:\n"
-            "1. Enhancing readability\n"
-            "2. Improving performance\n"
-            "3. Reducing complexity\n"
-            "4. Modernizing patterns\n"
-            "Explain each change and why it's better."
-        )
-        prompt = f"Refactor this {language} code with improvements:\n\n{code[:5000]}"
-        return self.ask(prompt, system_prompt=system, model=CODING_MODEL, temperature=AI_TEMPERATURE_CODING)
+```
+{code}
+```
 
-    def analyze_problem(self, problem: str) -> str:
-        """Deep problem analysis."""
-        system = (
-            "You are an expert problem solver. Analyze problems by:\n"
-            "1. Breaking down the issue\n"
-            "2. Identifying root causes\n"
-            "3. Proposing solutions\n"
-            "4. Evaluating trade-offs"
+Cover:
+1. What it does overall
+2. Key logic and flow
+3. Any important patterns or concepts
+4. How to use or modify it"""
+        return self._chat(
+            self._build_messages(
+                prompt,
+                "You are an expert at explaining code. Be clear and educational.",
+            ),
+            model=CODING_MODEL,
+            temp=AI_TEMPERATURE_CODING,
         )
-        prompt = f"Analyze this problem and provide solutions:\n\n{problem}"
-        return self.ask(prompt, system_prompt=system, model=ADVANCED_MODEL, temperature=AI_TEMPERATURE_CREATIVE)
 
-    def get_suggestions(self, topic: str, context: str = "") -> str:
-        """Get creative suggestions."""
-        system = (
-            "You are a creative advisor. Provide thoughtful, actionable suggestions that are:\n"
-            "1. Innovative\n"
-            "2. Practical\n"
-            "3. Well-reasoned\n"
-            "4. Specific to the context"
+    def refactor_code(self, code: str) -> str:
+        """Suggest and perform code refactoring."""
+        prompt = f"""Refactor this code for readability, efficiency, and maintainability:
+
+```
+{code}
+```
+
+Provide:
+1. Refactored code
+2. Explanation of changes
+3. Why each change improves the code"""
+        return self._chat(
+            self._build_messages(
+                prompt,
+                "You are an expert code refactorer. Improve code without changing functionality.",
+            ),
+            model=CODING_MODEL,
+            temp=AI_TEMPERATURE_CODING,
         )
-        prompt = f"Topic: {topic}\n\nContext: {context}\n\nProvide creative suggestions."
-        return self.ask(prompt, system_prompt=system, model=ADVANCED_MODEL, temperature=AI_TEMPERATURE_CREATIVE)
+
+    def debug_error(self, error_message: str, code: str = "") -> str:
+        """Help debug errors."""
+        prompt = f"""Help me debug this error:
+
+{error_message}
+
+{f"Code context:\n```\n{code}\n```" if code else ""}
+
+Provide:
+1. What the error means
+2. Why it happens
+3. How to fix it
+4. Prevention tips"""
+        return self._chat(
+            self._build_messages(
+                prompt,
+                "You are an expert debugger. Help users understand and fix errors.",
+            ),
+            model=CODING_MODEL,
+            temp=AI_TEMPERATURE_CODING,
+        )
+
+    def creative(self, prompt: str) -> str:
+        """Handle creative/open-ended requests."""
+        return self._chat(
+            self._build_messages(
+                prompt,
+                "You are a creative and thoughtful AI assistant. Help with ideas, writing, and creative thinking.",
+            ),
+            model=DEFAULT_MODEL,
+            temp=AI_TEMPERATURE_CREATIVE,
+        )
 
     def clear_history(self):
         """Clear conversation history."""
-        self.conversation_history = []
-        logger.info("Conversation history cleared")
-
-
-class AIClient:
-    """Compatibility wrapper for AdvancedAIClient."""
-    def __init__(self, api_key: Optional[str] = None, model: str = DEFAULT_MODEL):
-        self.client = AdvancedAIClient(api_key)
-        self.model = model
-
-    def ask(self, prompt: str, system_prompt: str = None) -> str:
-        return self.client.ask(prompt, system_prompt=system_prompt, model=self.model)
-
-    def code_review(self, code: str, language: str = "python") -> str:
-        return self.client.code_review(code, language)
-
-    def generate_code(self, description: str, language: str = "python") -> str:
-        return self.client.generate_code(description, language)
-
-    def debug_error(self, error: str, context: str = "") -> str:
-        return self.client.debug_error(error, context)
-
-    def explain_code(self, code: str) -> str:
-        return self.client.explain_code(code)
+        self.conversation_history.clear()
