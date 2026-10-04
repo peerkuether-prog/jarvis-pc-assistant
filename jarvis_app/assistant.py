@@ -1,8 +1,15 @@
-from datetime import datetime
-from pathlib import Path
+from __future__ import annotations
 
-from jarvis_app.ai_client import AIClient
-from jarvis_app.config import PROJECT_NAME, get_home_dir, get_config_dir
+import json
+import logging
+import os
+import re
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Optional
+
+from jarvis_app.ai_client import AdvancedAIClient
+from jarvis_app.config import APP_TITLE, PROJECT_NAME, get_home_dir
 from jarvis_app.system_tools import (
     delete_file,
     get_file_info,
@@ -15,164 +22,172 @@ from jarvis_app.system_tools import (
     search_web,
     write_file,
 )
-from jarvis_app.voice import VoiceController, get_current_date, get_current_datetime, get_current_time
+from jarvis_app.voice import VoiceController, get_current_date, get_current_time
+
+logger = logging.getLogger(__name__)
 
 
-class CodingAI:
-    """Specialized AI for coding tasks."""
+@dataclass
+class IntentResult:
+    intent: str
+    payload: Dict[str, Any] = field(default_factory=dict)
+    response: Optional[str] = None
 
-    def __init__(self, api_key: str = ""):
-        self.ai = AIClient(api_key=api_key)
 
-    def review_code(self, code: str, language: str = "python") -> str:
-        return self.ai.code_review(code, language)
+class IntentRouter:
+    """A cleaner intent-based command system for Jarvis."""
 
-    def generate_code(self, description: str, language: str = "python") -> str:
-        return self.ai.generate_code(description, language)
+    def __init__(self, assistant: "JarvisAssistant"):
+        self.assistant = assistant
 
-    def debug(self, error: str, context: str = "") -> str:
-        return self.ai.debug_error(error, context)
+    def route(self, text: str) -> IntentResult:
+        query = text.strip()
+        if not query:
+            return IntentResult("empty", response="I am ready. Ask me to open apps, check your system, or do something safe.")
 
-    def explain(self, code: str) -> str:
-        return self.ai.explain_code(code)
+        lowered = query.lower()
 
-    def refactor(self, code: str, language: str = "python") -> str:
-        system = f"You are a {language} refactoring expert. Provide improved, cleaner, more efficient code with explanations."
-        prompt = f"Refactor this {language} code:\n\n{code}"
-        return self.ai.ask(prompt, system_prompt=system)
+        if lowered in {"hello", "hi", "hey", "good morning", "good evening", "good afternoon"}:
+            return IntentResult("greeting", response=f"Hello! I am {PROJECT_NAME}. How can I help you today?")
+
+        if lowered in {"help", "what can you do", "capabilities"}:
+            return IntentResult(
+                "help",
+                response=(
+                    "I can open apps, browse folders, read files, search the web, check system info, "
+                    "run safe commands, answer questions, and help with coding tasks."
+                ),
+            )
+
+        if "time" in lowered and "date" not in lowered:
+            return IntentResult("time", response=f"The current time is {get_current_time()}.")
+
+        if "date" in lowered:
+            return IntentResult("date", response=f"Today is {get_current_date()}.")
+
+        if "system" in lowered or "computer" in lowered or "device" in lowered or "spec" in lowered:
+            return IntentResult("system", response=get_system_summary())
+
+        if "uptime" in lowered:
+            return IntentResult("uptime", response=f"System uptime: {self.assistant.system_uptime()}")
+
+        if re.search(r"\b(open|launch)\s+(https?://|www\.)", lowered):
+            return IntentResult("open_url", response=open_url(query.split(None, 1)[1].strip()))
+
+        if re.search(r"\b(open|launch)\b", lowered):
+            target = re.sub(r"^(open|launch)\s+", "", query, flags=re.I).strip()
+            if not target:
+                return IntentResult("open_error", response="What would you like me to open?")
+            return IntentResult("open_app", response=open_app(target))
+
+        if re.search(r"\b(search|look up|find)\b", lowered):
+            target = re.sub(r"^(search|look up|find)\s+(web\s+)?", "", query, flags=re.I).strip()
+            if not target:
+                return IntentResult("search_error", response="What do you want me to search for?")
+            return IntentResult("search", response=search_web(target))
+
+        if re.search(r"\b(go to|open website|open url)\b", lowered):
+            target = re.sub(r"^(go to|open website|open url)\s+", "", query, flags=re.I).strip()
+            if not target:
+                return IntentResult("open_url_error", response="What website should I open?")
+            return IntentResult("open_url", response=open_url(target))
+
+        if "list folder" in lowered or "list files" in lowered or "show files" in lowered or "show folder" in lowered:
+            folder = re.sub(r"^(list folder|list files|show files|show folder)\s+", "", query, flags=re.I).strip()
+            return IntentResult("list_dir", response=list_dir(folder or get_home_dir()))
+
+        if "read file" in lowered:
+            path = re.sub(r"^read file\s+", "", query, flags=re.I).strip()
+            return IntentResult("read_file", response=read_file(path))
+
+        if "write file" in lowered or "create file" in lowered:
+            try:
+                if " with content" in lowered:
+                    expr = re.sub(r"^(write file|create file)\s+", "", query, flags=re.I)
+                    path_part, content_part = expr.split(" with content", 1)
+                    return IntentResult("write_file", response=write_file(path_part.strip(), content_part.strip()))
+                if " content:" in lowered:
+                    expr = re.sub(r"^(write file|create file)\s+", "", query, flags=re.I)
+                    path_part, content_part = expr.split(" content:", 1)
+                    return IntentResult("write_file", response=write_file(path_part.strip(), content_part.strip()))
+            except Exception:
+                pass
+            return IntentResult("write_file_error", response="Use: write file C:/path/file.txt with content: hello")
+
+        if "delete file" in lowered:
+            path = re.sub(r"^delete file\s+", "", query, flags=re.I).strip()
+            return IntentResult("delete_file", response=delete_file(path))
+
+        if "file info" in lowered or "info about" in lowered:
+            path = re.sub(r"^(file info|info about)\s+", "", query, flags=re.I).strip()
+            return IntentResult("file_info", response=get_file_info(path))
+
+        if "run command" in lowered or "execute" in lowered:
+            command = re.sub(r"^(run command|execute)\s+", "", query, flags=re.I).strip()
+            if not command:
+                return IntentResult("command_error", response="What command should I run?")
+            return IntentResult("command", response=safe_execute(command))
+
+        if re.search(r"\b(review code|code review|debug|explain code|refactor code|generate code|write code)\b", lowered):
+            return IntentResult("coding", payload={"raw": query})
+
+        if "shutdown" in lowered or "restart" in lowered or "format" in lowered or "delete all" in lowered:
+            return IntentResult("blocked", response="I will not perform destructive or risky actions without explicit confirmation.")
+
+        return IntentResult("fallback", response=self.assistant.ai_fallback(query))
 
 
 class JarvisAssistant:
-    def __init__(self, api_key: str = ""):
-        self.ai = AIClient(api_key=api_key)
-        self.coding = CodingAI(api_key=api_key)
-        self.voice = VoiceController()
-        self.history = []
+    """Clean core assistant logic."""
 
-    def log_action(self, user_input: str, response: str):
-        """Log conversation to history."""
-        timestamp = get_current_datetime()
-        self.history.append({"timestamp": timestamp, "user": user_input, "jarvis": response})
+    def __init__(self, api_key: str = ""):
+        self.ai = AdvancedAIClient(api_key=api_key)
+        self.voice = VoiceController()
+        self.router = IntentRouter(self)
+        self.history: List[Dict[str, str]] = []
+
+    def system_uptime(self) -> str:
+        try:
+            with open("/proc/uptime", "r", encoding="utf-8") as fh:
+                total_seconds = float(fh.read().split()[0])
+            hours, remainder = divmod(int(total_seconds), 3600)
+            minutes, _ = divmod(remainder, 60)
+            return f"{hours} hours, {minutes} minutes"
+        except Exception:
+            return "Uptime unavailable on this platform."
+
+    def ai_fallback(self, query: str) -> str:
+        response = self.ai.ask(query, system_prompt="You are Jarvis, a helpful desktop assistant. Keep responses brief, clear, and practical.")
+        if response:
+            return response
+        return "I can help with local tasks, web searches, files, system info, and coding help. Try asking me to open an app, check the time, or read a file."
 
     def handle(self, user_text: str) -> str:
-        text = user_text.strip()
-        if not text:
-            return "I am ready. Ask me to open apps, search, code, read files, or check your system."
+        result = self.router.route(user_text)
 
-        lowered = text.lower()
-        if lowered.startswith("jarvis"):
-            text = text[6:].strip()
-            lowered = text.lower()
+        if result.intent == "coding":
+            raw = result.payload.get("raw", "")
+            lowered = raw.lower()
+            if "review code" in lowered or "code review" in lowered:
+                code = re.sub(r"^(review code|code review)\s+", "", raw, flags=re.I).strip()
+                return self.ai.code_review(code or "")
+            if "generate code" in lowered or "write code" in lowered:
+                prompt = re.sub(r"^(generate code|write code)\s+", "", raw, flags=re.I).strip()
+                return self.ai.generate_code(prompt or raw)
+            if "explain code" in lowered:
+                code = re.sub(r"^explain code\s+", "", raw, flags=re.I).strip()
+                return self.ai.explain_code(code or raw)
+            if "refactor code" in lowered:
+                code = re.sub(r"^refactor code\s+", "", raw, flags=re.I).strip()
+                return self.ai.refactor_code(code or raw)
+            if "debug" in lowered:
+                message = re.sub(r"^debug\s+", "", raw, flags=re.I).strip()
+                return self.ai.debug_error(message or raw)
+            return self.ai_fallback(raw)
 
-        # Greetings
-        if lowered in {"hello", "hi", "hey", "good morning", "good evening", "good afternoon"}:
-            return f"Hello! I am {PROJECT_NAME}. How can I help today?"
+        response = result.response or self.ai_fallback(user_text)
+        self.history.append({"user": user_text, "assistant": response})
+        return response
 
-        if lowered in {"help", "what can you do", "capabilities"}:
-            return (
-                "I can: open apps and websites, read and write files, list folders, run safe commands, search the web, "
-                "check system info, review code, generate code, debug errors, explain code, refactor code, "
-                "tell time and date, and answer questions with AI."
-            )
-
-        # Time and Date
-        if "time" in lowered and "date" not in lowered:
-            return f"The current time is {get_current_time()}."
-        if "date" in lowered:
-            return f"Today is {get_current_date()}."
-
-        # System Info
-        if "system" in lowered or "computer" in lowered or "device" in lowered:
-            return get_system_summary()
-
-        # App and URL Control
-        if "open " in lowered:
-            target = text.replace("open ", "", 1).strip()
-            if target.lower().startswith("http"):
-                return open_url(target)
-            return open_app(target)
-
-        if "launch " in lowered:
-            target = text.replace("launch ", "", 1).strip()
-            return open_app(target)
-
-        # Web Search
-        if "search web" in lowered or "search the web" in lowered:
-            query = text.replace("search web", "", 1).replace("search the web", "", 1).strip()
-            return search_web(query)
-        if "search" in lowered:
-            query = text.replace("search", "", 1).strip()
-            if query:
-                return search_web(query)
-
-        if "open website" in lowered or "open url" in lowered or "go to" in lowered:
-            query = text.replace("open website", "", 1).replace("open url", "", 1).replace("go to", "", 1).strip()
-            return open_url(query)
-
-        # File Operations
-        if "list folder" in lowered or "show files" in lowered or "list files" in lowered:
-            query = text.replace("list folder", "", 1).replace("show files", "", 1).replace("list files", "", 1).strip()
-            return list_dir(query or get_home_dir())
-
-        if "read file" in lowered:
-            path = text.replace("read file", "", 1).strip()
-            return read_file(path)
-
-        if "write file" in lowered or "create file" in lowered:
-            # Parse "write file /path/to/file with content: data"
-            parts = text.replace("write file", "", 1).replace("create file", "", 1).strip()
-            if " with " in parts or " content " in parts:
-                try:
-                    path, content = parts.split(" with ", 1) if " with " in parts else parts.split(" content ", 1)
-                    return write_file(path.strip(), content.strip())
-                except Exception:
-                    return "Usage: write file /path with content: your text here"
-            return "Usage: write file /path with content: your text here"
-
-        if "delete file" in lowered:
-            path = text.replace("delete file", "", 1).strip()
-            return delete_file(path)
-
-        if "file info" in lowered or "info about" in lowered:
-            path = text.replace("file info", "", 1).replace("info about", "", 1).strip()
-            return get_file_info(path)
-
-        # Command Execution
-        if "run command" in lowered or "execute" in lowered:
-            command = text.replace("run command", "", 1).replace("execute", "", 1).strip()
-            return safe_execute(command)
-
-        # Coding AI Features
-        if "review code" in lowered or "code review" in lowered:
-            prompt = text.replace("review code", "", 1).replace("code review", "", 1).strip()
-            return self.coding.review_code(prompt)
-
-        if "generate code" in lowered or "write code" in lowered:
-            prompt = text.replace("generate code", "", 1).replace("write code", "", 1).strip()
-            return self.coding.generate_code(prompt)
-
-        if "debug" in lowered or "what's wrong" in lowered:
-            error_text = text.replace("debug", "", 1).replace("what's wrong", "", 1).strip()
-            return self.coding.debug(error_text)
-
-        if "explain code" in lowered:
-            code = text.replace("explain code", "", 1).strip()
-            return self.coding.explain(code)
-
-        if "refactor code" in lowered:
-            code = text.replace("refactor code", "", 1).strip()
-            return self.coding.refactor(code)
-
-        # Block dangerous actions
-        if "shutdown" in lowered or "restart" in lowered or "delete" in lowered:
-            return "I will not perform destructive actions without explicit confirmation. I can help with safe tasks instead."
-
-        # AI Fallback
-        ai_response = self.ai.ask(text)
-        if ai_response:
-            return ai_response
-
-        return (
-            "I can help with local computer tasks, app control, file management, web search, system info, and coding assistance. "
-            "What would you like me to do?"
-        )
+    def clear_history(self):
+        self.history.clear()

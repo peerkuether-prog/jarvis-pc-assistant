@@ -1,5 +1,7 @@
-from jarvis_app.app import launch_app
+#!/usr/bin/env python3
+"""Jarvis Premium - Clean, modular desktop assistant entry point."""
 
+from jarvis_app.app import launch_app
 
 if __name__ == "__main__":
     launch_app()
