@@ -1,44 +1,97 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+"""
+Voice module with fallback for PyAudio issues.
+Works on Windows without PyAudio (uses native audio).
+"""
+
 import os
+import logging
 from datetime import datetime
 
-import pyttsx3
-import speech_recognition as sr
+try:
+    import pyttsx3
+    TTS_AVAILABLE = True
+except ImportError:
+    TTS_AVAILABLE = False
+    logging.warning("pyttsx3 not available - text-to-speech disabled")
+
+try:
+    import speech_recognition as sr
+    SR_AVAILABLE = True
+except ImportError:
+    SR_AVAILABLE = False
+    logging.warning("speech_recognition not available - voice input disabled")
 
 
 class VoiceController:
-    def __init__(self):
-        self.recognizer = sr.Recognizer()
-        self.microphone = sr.Microphone()
-        self.engine = None
-        self._setup_engine()
+    """Voice input/output with fallback support."""
 
-    def _setup_engine(self):
-        try:
-            self.engine = pyttsx3.init()
-            self.engine.setProperty("rate", 170)
-            self.engine.setProperty("volume", 1.0)
-        except Exception:
-            self.engine = None
+    def __init__(self):
+        self.recognizer = None
+        self.microphone = None
+        self.engine = None
+        self._setup()
+
+    def _setup(self):
+        """Setup voice components with error handling."""
+        # Setup speech recognition
+        if SR_AVAILABLE:
+            try:
+                self.recognizer = sr.Recognizer()
+                self.microphone = sr.Microphone()
+                logging.info("Speech recognition initialized")
+            except Exception as e:
+                logging.warning(f"Could not initialize speech recognition: {e}")
+                self.recognizer = None
+                self.microphone = None
+        
+        # Setup text-to-speech
+        if TTS_AVAILABLE:
+            try:
+                self.engine = pyttsx3.init()
+                self.engine.setProperty("rate", 170)
+                self.engine.setProperty("volume", 1.0)
+                logging.info("Text-to-speech initialized")
+            except Exception as e:
+                logging.warning(f"Could not initialize TTS: {e}")
+                self.engine = None
 
     def listen_once(self, timeout: int = 8) -> str:
+        """Listen for voice input with fallback."""
+        if not self.recognizer or not self.microphone:
+            logging.debug("Speech recognition not available")
+            return ""
+
         try:
             with self.microphone as source:
                 self.recognizer.adjust_for_ambient_noise(source, duration=0.5)
                 audio = self.recognizer.listen(source, timeout=timeout, phrase_time_limit=timeout)
             return self.recognizer.recognize_google(audio).strip()
-        except (sr.WaitTimeoutError, sr.UnknownValueError, sr.RequestError):
+        except sr.WaitTimeoutError:
+            logging.debug("Voice input timeout")
             return ""
-        except Exception:
+        except sr.UnknownValueError:
+            logging.debug("Could not understand audio")
+            return ""
+        except sr.RequestError as e:
+            logging.warning(f"Google Speech API error: {e}")
+            return ""
+        except Exception as e:
+            logging.warning(f"Voice input error: {e}")
             return ""
 
     def speak(self, text: str) -> bool:
+        """Speak text with fallback."""
         if not text or not self.engine:
             return False
+        
         try:
             self.engine.say(text)
             self.engine.runAndWait()
             return True
-        except Exception:
+        except Exception as e:
+            logging.warning(f"Text-to-speech error: {e}")
             return False
 
 
